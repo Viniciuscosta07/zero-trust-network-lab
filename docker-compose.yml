@@ -1,0 +1,170 @@
+version: '3.8'
+
+services:
+  # SDP Controller - Orchestrates zero trust policies
+  sdp-controller:
+    build:
+      context: ./sdp/controller
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - FLASK_ENV=development
+      - DATABASE_URL=sqlite:///sdp_controller.db
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+    networks:
+      - zero-trust-net
+    depends_on:
+      - pki-ca
+
+  # SDP Gateway - Secure connection endpoints
+  sdp-gateway:
+    build:
+      context: ./sdp/gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+      - "51820:51820/udp"  # WireGuard port
+    environment:
+      - CONTROLLER_URL=http://sdp-controller:8001
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+    networks:
+      - zero-trust-net
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - sdp-controller
+
+  # PKI Certificate Authority
+  pki-ca:
+    build:
+      context: ./pki/ca
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - CA_NAME=ZeroTrust-Root-CA
+    volumes:
+      - ./pki/certificates:/app/certificates
+      - ./config:/app/config
+      - ./logs:/app/logs
+    networks:
+      - zero-trust-net
+
+  # Network Access Control
+  nac-service:
+    build:
+      context: ./nac
+      dockerfile: Dockerfile
+    ports:
+      - "8004:8004"
+    environment:
+      - PKI_CA_URL=http://pki-ca:8003
+      - SDP_CONTROLLER_URL=http://sdp-controller:8001
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+    networks:
+      - zero-trust-net
+    depends_on:
+      - pki-ca
+      - sdp-controller
+
+  # Micro-segmentation Engine
+  microseg-engine:
+    build:
+      context: ./microsegmentation
+      dockerfile: Dockerfile
+    ports:
+      - "8005:8005"
+    environment:
+      - SDP_CONTROLLER_URL=http://sdp-controller:8001
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+    networks:
+      - zero-trust-net
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - sdp-controller
+
+  # Integration API Gateway
+  integration-api:
+    build:
+      context: ./integration
+      dockerfile: Dockerfile
+    ports:
+      - "8006:8006"
+    environment:
+      - SDP_CONTROLLER_URL=http://sdp-controller:8001
+      - PKI_CA_URL=http://pki-ca:8003
+      - NAC_SERVICE_URL=http://nac-service:8004
+      - MICROSEG_ENGINE_URL=http://microseg-engine:8005
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+    networks:
+      - zero-trust-net
+    depends_on:
+      - sdp-controller
+      - pki-ca
+      - nac-service
+      - microseg-engine
+
+  # Monitoring Dashboard
+  monitoring-dashboard:
+    build:
+      context: ./monitoring
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - NODE_ENV=development
+      - INTEGRATION_API_URL=http://integration-api:8006
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+    networks:
+      - zero-trust-net
+    depends_on:
+      - integration-api
+
+  # Redis for session management and caching
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - zero-trust-net
+
+  # Database for persistent storage
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=zerotrust
+      - POSTGRES_USER=ztuser
+      - POSTGRES_PASSWORD=ztpass123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - zero-trust-net
+
+networks:
+  zero-trust-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  redis-data:
+  postgres-data:

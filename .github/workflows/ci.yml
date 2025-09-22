@@ -1,0 +1,257 @@
+name: Zero Trust Network CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  release:
+    types: [published]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, "3.10", "3.11"]
+        node-version: [16, 18, 20]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Set up Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+
+    - name: Cache Python dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Cache Node dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.npm
+        key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.os }}-node-
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov black flake8 safety bandit
+
+    - name: Install Node.js dependencies
+      run: npm ci
+
+    - name: Lint Python code
+      run: |
+        # Check code formatting with black
+        black --check .
+        # Lint with flake8
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=88 --statistics
+
+    - name: Lint JavaScript code
+      run: npm run lint
+
+    - name: Security checks
+      run: |
+        # Check for known security vulnerabilities in dependencies
+        safety check
+        # Static security analysis
+        bandit -r . -f json -o bandit-report.json || true
+
+    - name: Run Python tests
+      run: |
+        pytest --cov=. --cov-report=xml --cov-report=html
+
+    - name: Run JavaScript tests
+      run: npm test
+
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      if: github.event_name != 'pull_request'
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+
+    - name: Build and test Docker images
+      run: |
+        docker-compose build
+        docker-compose up -d
+        sleep 30
+        # Basic health checks
+        curl -f http://localhost:8001/health
+        curl -f http://localhost:8002/health
+        curl -f http://localhost:8003/health
+        curl -f http://localhost:8004/health
+        curl -f http://localhost:8005/health
+        curl -f http://localhost:8006/health
+        curl -f http://localhost:8080/health
+        docker-compose down
+
+    - name: Push Docker images
+      if: github.event_name != 'pull_request'
+      run: |
+        # Tag and push images for each service
+        services=("sdp-controller" "sdp-gateway" "pki-ca" "nac-service" "microseg-engine" "integration-api" "monitoring-dashboard")
+        for service in "${services[@]}"; do
+          docker tag zero_${service} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${service}:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${service}:${{ github.sha }}
+          
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            docker tag zero_${service} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${service}:latest
+            docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${service}:latest
+          fi
+        done
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: docker-build
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install requests pytest
+
+    - name: Run integration tests
+      run: |
+        # Start the full system
+        docker-compose up -d
+        sleep 60
+        
+        # Run integration tests
+        python -m pytest tests/integration/ -v
+        
+        # Cleanup
+        docker-compose down
+
+  documentation:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install documentation dependencies
+      run: |
+        pip install mkdocs mkdocs-material mkdocs-mermaid2-plugin
+
+    - name: Build documentation
+      run: |
+        mkdocs build
+
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      if: github.ref == 'refs/heads/main'
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./site
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [test, security-scan, docker-build, integration-test]
+    if: github.event_name == 'release'
+    
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Create release artifacts
+      run: |
+        # Create release package
+        tar -czf zero-trust-network-lab-${{ github.event.release.tag_name }}.tar.gz \
+          --exclude='.git*' \
+          --exclude='node_modules' \
+          --exclude='__pycache__' \
+          --exclude='*.pyc' \
+          --exclude='.pytest_cache' \
+          --exclude='logs' \
+          --exclude='*.db' \
+          .
+
+    - name: Upload release artifacts
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./zero-trust-network-lab-${{ github.event.release.tag_name }}.tar.gz
+        asset_name: zero-trust-network-lab-${{ github.event.release.tag_name }}.tar.gz
+        asset_content_type: application/gzip
